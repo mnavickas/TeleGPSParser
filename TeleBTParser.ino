@@ -24,6 +24,30 @@ typedef struct __attribute__((__packed__))
    uint8_t type;
   } Header_t;
 
+
+typedef struct __attribute__((__packed__))
+  {
+  uint8_t flags;
+  int16_t altitude;
+  int32_t latitude;
+  int32_t longitude;
+  uint8_t year;
+  uint8_t month;
+  uint8_t day;
+  uint8_t hour;
+  uint8_t minute;
+  uint8_t second;
+  uint8_t pdop;
+  uint8_t hdop;
+  uint8_t vdop;
+  uint8_t mode;
+  uint16_t ground_speed;
+  int16_t climb_rate;
+  uint8_t course;
+  uint8_t unused[1];
+  } gps_location_data_t;
+
+
 void parse(char c, parse_state_t * cb);
 
 parse_state_t parser;
@@ -32,7 +56,36 @@ void setup() {
   // put your setup code here, to run once:
 
   Serial2.begin(38400);
-  Serial.begin(115200);
+  Serial.begin(38400);
+  
+  delay(1000);
+  Serial2.print("AT+INIT\r\n");
+  delay(1000);
+  Serial2.print("AT+INQ\r\n");
+  delay(5000);
+  Serial2.print("AT+PAIR=12,6F,63B884,5\r\n");
+  delay(2000);
+  Serial2.print("AT+BIND=12,6F,63B884\r\n");
+  delay(2000);
+  Serial2.print("AT+LINK=12,6F,63B884\r\n");
+  delay(5000);
+
+  while( Serial2.available() )
+  {
+    Serial.write(Serial2.read());
+  }
+  Serial2.print("E 0\nm 0\n");
+  Serial2.print("c F 435650\n");
+  Serial2.print("c T 0\n");
+
+  while( Serial2.available() )
+  {
+    Serial.write(Serial2.read());
+  }
+  Serial2.print("m 20\n");
+  delay(500);
+
+  Serial.println("Init Done");
   
 
 memset(&parser, 0, sizeof(parser) );
@@ -40,6 +93,9 @@ memset(&parser, 0, sizeof(parser) );
  
 }
 
+
+// AT needs \r\n
+// ALTOS needs \n
 
 // AT+INIT
 // AT+INQ
@@ -53,32 +109,68 @@ void loop() {
   // put your main code here, to run repeatedly:
 
  //from bluetooth to Terminal. 
- if (Serial2.available()) 
+
+ if( Serial2.available() ) 
    parse( Serial2.read(), &parser );
-
-/*
- //from termial to bluetooth 
- if (Serial.available()) 
-   Serial2.write(Serial.read());
-*/
-
-/*
-
-char * data = "TELEM 224510240804250100011780631513c0074e30574d50000000312e382e37000000528837";
-parse_state_t parser;
-
-memset(&parser, 0, sizeof(parser) );
-for( int i = 0; i < strlen(data); i++ )
-  {
-  Serial.print("Handling: ");Serial.println(data[i]);
-  parse( data[i], &parser );
-  delay(250);
-  }
-*/
-
+ 
 }
 
 
+void handleGPSLocationData(uint8_t * buf)
+  {
+  gps_location_data_t * gpsdata = (gps_location_data_t*)buf;
+  
+  Serial.print("Soln. Valid ");Serial.println((bool) (gpsdata->flags & (1<<4)) );
+  Serial.print("Altitude ");Serial.println(gpsdata->altitude);
+  Serial.print("Latitude ");Serial.println(gpsdata->latitude / 10000000.0f, 6);
+  Serial.print("Longitude ");Serial.println(gpsdata->longitude / 10000000.0f, 6);
+  Serial.print("Minute ");Serial.println(gpsdata->minute);
+  Serial.print("Second ");Serial.println(gpsdata->second);
+  
+  Serial.print("PDOP ");Serial.println(gpsdata->pdop / 5.0, 4);
+  Serial.print("HDOP ");Serial.println(gpsdata->hdop / 5.0, 4);
+  Serial.print("VDOP ");Serial.println(gpsdata->vdop / 5.0, 4);
+  Serial.println();
+  }
+void handleCompleted(parse_state_t * cb)
+{
+//Serial.println("Finished");
+Serial.println(cb->buf);
+
+hextobin(cb->buf, cb->bin, ( cb->data_sz + 2 + 2 ) / 2 );
+
+uint8_t * actualcrc = &(cb->bin[35]);
+uint8_t computedcrc = 0x5A;
+for( int i =1; i< 35; i ++ )
+  {
+  // over:flow intentional
+  computedcrc += cb->bin[i];
+  }
+Serial.print("CRC: ");Serial.print(*actualcrc); Serial.print(" Computed: ");Serial.println(computedcrc); 
+
+
+if( *actualcrc == computedcrc )
+  {
+  Header_t * header = (Header_t *)cb->bin;
+  
+  Serial.print("Binary Size: ");Serial.println(header->data_sz);
+  Serial.print("Serial: ");Serial.println(header->serial);
+  Serial.print("Tick: ");Serial.println(header->tick);
+  Serial.print("Type: ");Serial.println(header->type);
+
+  switch(header->type)
+    {
+    case 0x05:
+      handleGPSLocationData( &cb->bin[6] );
+    }
+  
+  }
+
+
+
+
+memset(&parser, 0, sizeof(parser));
+}
 
 
 void parse(char c, parse_state_t * cb)
@@ -118,20 +210,9 @@ switch( cb->state )
     if( cb->index >= 2 + 2 + cb->data_sz ) // 2 bytes size, 2 bytes crc
       {
       cb->buf[cb->index]='\0';
-      //Serial.println("Finished");
-      Serial.println(cb->buf);
 
-      hextobin(cb->buf, cb->bin, ( cb->data_sz + 2 + 2 ) / 2 );
+      handleCompleted( cb );
 
-      Header_t * header = (Header_t *)cb->bin;
-
-      Serial.print("Binary Size: ");Serial.println(header->data_sz);
-      Serial.print("Serial: ");Serial.println(header->serial);
-      Serial.print("Tick: ");Serial.println(header->tick);
-      Serial.print("Type: ");Serial.println(header->type);
-      Serial.println();
-
-      memset(&parser, 0, sizeof(parser));
       }
       
     }
